@@ -12,8 +12,8 @@ from urllib.parse import quote
 from ..importer import import_rows
 
 ALIASES = {
-    "source_id": ("source_id", "regnumber", "purchasenumber", "номер закупки", "номер извещения", "реестровый номер", "номер извещения о закупке", "икз"),
-    "title": ("title", "purchaseobjectinfo", "objectinfo", "наименование закупки", "объект закупки", "название закупки", "предмет контракта"),
+    "source_id": ("source_id", "regnumber", "purchasenumber", "номер закупки", "номер извещения", "реестровый номер", "номер извещения о закупке", "икз", "номер"),
+    "title": ("title", "purchaseobjectinfo", "objectinfo", "наименование закупки", "объект закупки", "название закупки", "предмет контракта", "предмет закупки"),
     "price": ("price", "nmck", "начальная (максимальная) цена контракта", "начальная максимальная цена", "нмцк", "цена контракта"),
     "address": ("address", "deliveryplace", "placeofwork", "место поставки", "место выполнения работ", "адрес объекта"),
     "customer": ("customer", "customername", "customerfullname", "заказчик", "наименование заказчика", "полное наименование заказчика"),
@@ -21,14 +21,17 @@ ALIASES = {
     "contact_name": ("contact_name", "contactperson", "контактное лицо", "фио контактного лица"),
     "contact_phone": ("contact_phone", "contactphone", "телефон", "номер телефона"),
     "contact_email": ("contact_email", "contactemail", "электронная почта", "e-mail", "email"),
-    "url": ("url", "href", "ссылка", "ссылка на закупку", "ссылка на извещение"),
+    "url": ("url", "href", "ссылка", "ссылка на закупку", "ссылка на извещение", "размещено в единой информационной системе в сфере закупок"),
     "region": ("region", "regionname", "регион", "субъект российской федерации", "субъект рф"),
     "description": ("description", "описание объекта закупки", "описание закупки", "дополнительная информация"),
     "published_at": ("published_at", "publishdate", "дата публикации", "дата размещения", "дата публикации извещения"),
 }
 
 def _norm(value: str) -> str:
-    return re.sub(r"[^a-zа-яё0-9]+", "", (value or "").lower().replace("ё", "е"))
+    # "№" is a number sign, not a letter: keep it as the word "номер" so a
+    # column named "№" does not normalize to an empty string.
+    text = (value or "").lower().replace("ё", "е").replace("№", "номер")
+    return re.sub(r"[^a-zа-яё0-9]+", "", text)
 
 def _read_csv(payload: bytes) -> list[dict]:
     for encoding in ("utf-8-sig", "cp1251"):
@@ -61,6 +64,10 @@ def _read_csv(payload: bytes) -> list[dict]:
     for source in reader:
         row = {field: (source.get(column) or "").strip() for field, column in mapping.items()}
         regnum = row.get("source_id", "")
+        if regnum:
+            # Open-data exports often prefix the number with the sign itself.
+            regnum = re.sub(r"^№\s*", "", regnum).strip()
+            row["source_id"] = regnum
         if not row.get("url") and regnum:
             row["url"] = "https://zakupki.gov.ru/epz/order/extendedsearch/results.html?searchString=" + quote(regnum)
         rows.append(row)

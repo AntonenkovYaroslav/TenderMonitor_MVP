@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import contextmanager
 from .config import DB, DATA
 
 # Keep the original columns and add new fields without deleting existing records.
@@ -39,8 +40,25 @@ def connect():
     con.row_factory = sqlite3.Row
     return con
 
+@contextmanager
+def session():
+    """Transaction context that always closes the connection.
+
+    `with connect() as con` only commits/rolls back; the connection itself stays
+    open while `con` is alive, which keeps data/tenders.db locked on Windows.
+    """
+    con = connect()
+    try:
+        yield con
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
 def init_db():
-    with connect() as con:
+    with session() as con:
         con.execute(BASE_SCHEMA)
         existing = {
             row["name"] for row in con.execute("PRAGMA table_info(tenders)").fetchall()

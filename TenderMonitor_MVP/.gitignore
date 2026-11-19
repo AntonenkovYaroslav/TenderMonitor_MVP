@@ -1,7 +1,23 @@
+# Python / virtual environment
 .venv/
 __pycache__/
 *.pyc
+
+# Local database and SQLite side files
 data/*.db
-data/incoming.csv
-reports/*.xlsx
-logs/*.log
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+# Generated reports and logs (recreated on every run)
+reports/
+logs/
+last_run.log
+
+# Ad-hoc local imports
+data/incoming*.csv
+
+# Office lock files and OS junk
+~$*
+Thumbs.db
+desktop.ini

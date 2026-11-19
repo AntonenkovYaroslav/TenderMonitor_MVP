@@ -12,7 +12,7 @@ from html import unescape
 
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
-from ..db import connect, init_db
+from ..db import session, init_db
 from ..exporter import export
 from ..importer import import_rows
 
@@ -235,7 +235,7 @@ def run_once() -> tuple[int, int, Path]:
                 else:
                     filtered_out += 1
 
-        with connect() as con:
+        with session() as con:
             existing_ids = {row[0] for row in con.execute("SELECT DISTINCT source_id FROM tenders")}
         unseen = []
         duplicates = 0

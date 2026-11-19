@@ -1,0 +1,7 @@
+root = true
+
+# cmd.exe mis-parses UTF-8 .bat files with LF line endings; keep them CRLF
+# in every editor. Delivery is additionally enforced by .gitattributes.
+[*.bat]
+end_of_line = crlf
+charset = utf-8

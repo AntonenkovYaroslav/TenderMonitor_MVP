@@ -1,0 +1,4 @@
+# Windows batch scripts: cmd.exe mis-parses UTF-8 .bat files that use LF line
+# endings (lines get split mid-word and commands fail). Force CRLF in every
+# working tree and in git archives, regardless of the cloner's core.autocrlf.
+*.bat text eol=crlf

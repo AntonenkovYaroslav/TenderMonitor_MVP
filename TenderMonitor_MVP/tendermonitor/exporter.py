@@ -1,7 +1,7 @@
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
-from .db import connect, init_db
+from .db import session, init_db
 from .config import REPORTS
 
 HEAD = [
@@ -14,7 +14,7 @@ HEAD = [
 
 def export():
     init_db()
-    with connect() as con:
+    with session() as con:
         rows = con.execute("""
             SELECT first_seen, category, title, price,
                    COALESCE(NULLIF(object_address,''), address) AS export_address,
@@ -23,7 +23,7 @@ def export():
                    relevance, score, region, region_check, url, description
             FROM tenders AS current
             WHERE current.id = (
-                SELECT MIN(previous.id) FROM tenders AS previous
+                SELECT MAX(previous.id) FROM tenders AS previous
                 WHERE previous.source_id = current.source_id
             )
             ORDER BY score DESC, deadline

@@ -1,3 +1,0 @@
-2026-11-19 18:23:29,206 INFO EIS collection method=Edge; raw records before filters=34
-2026-11-19 18:23:29,206 INFO Demo mode enabled: business and region filters are bypassed
-2026-11-19 18:23:29,298 INFO EIS summary: method=Edge raw=34 filtered_out=0 matched=34 already_seen=1 imported=33 skipped=0 report=C:\Users\Admin\Downloads\TenderMonitor_MVP_Windows\TenderMonitor_MVP\reports\tenders_report.xlsx

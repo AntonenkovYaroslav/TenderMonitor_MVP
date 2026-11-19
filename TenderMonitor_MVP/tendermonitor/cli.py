@@ -5,7 +5,6 @@ from .importer import import_csv
 from .exporter import export
 from .sources.eis import import_package as import_eis_package, inspect_package as inspect_eis_package
 from .sources.open_data import import_open_data
-from .sources.eis_browser import run_once as run_eis_browser
 from .scheduler import run_schedule
 def main():
     LOGS.mkdir(exist_ok=True)
@@ -55,6 +54,7 @@ def main():
         imported, skipped, parsed = import_open_data(a.source)
         print(f"Строк открытых данных: {parsed}; добавлено/обновлено: {imported}; пропущено: {skipped}")
     elif a.cmd=="monitor-eis":
+        from .sources.eis_browser import run_once as run_eis_browser
         try:
             found, imported, report = run_eis_browser()
         except Exception:
@@ -62,5 +62,6 @@ def main():
             raise
         print(f"Карточек ЕИС проверено: {found}; новых подходящих добавлено/обновлено: {imported}; Excel: {report}")
     elif a.cmd=="schedule-eis":
+        from .sources.eis_browser import run_once as run_eis_browser
         run_schedule(run_eis_browser)
 if __name__=="__main__": main()

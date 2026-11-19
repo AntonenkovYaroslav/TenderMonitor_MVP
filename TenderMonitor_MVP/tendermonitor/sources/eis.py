@@ -18,7 +18,7 @@ from typing import Iterable
 import xml.etree.ElementTree as ET
 
 from ..classifier import classify
-from ..db import connect, init_db
+from ..db import session, init_db
 
 ALIASES = {
     "source_id": {"purchasenumber", "regnumber", "registrationnumber", "purchaseid", "noticeid", "ikz"},
@@ -116,7 +116,7 @@ def import_package(path: str | Path) -> tuple[int, int, list[str]]:
     init_db()
     records, errors = parse_package(path)
     saved = 0
-    with connect() as con:
+    with session() as con:
         for row in records:
             row.pop("_source_file", None)
             classified = classify(row)
