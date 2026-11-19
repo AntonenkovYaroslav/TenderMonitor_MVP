@@ -30,12 +30,14 @@ def main():
     od=s.add_parser("import-eis-open-data", help="Загрузить CSV/ZIP из открытых данных ЕИС")
     od.add_argument("source", help="Прямая ссылка на публичный CSV/ZIP или локальный файл")
     s.add_parser("monitor-eis", help="Один сбор открытых закупок ЕИС и экспорт Excel")
-    s.add_parser("schedule-eis", help="Постоянный запуск мониторинга ЕИС ежедневно в 08:00 и 20:00")
+    sc=s.add_parser("schedule-eis", help="Постоянный запуск мониторинга ЕИС по расписанию (по умолчанию 08:00 и 20:00)")
+    sc.add_argument("--no-run-at-start", action="store_true", help="Не выполнять первый сбор сразу при старте")
+    sc.add_argument("--no-catch-up", action="store_true", help="Не догонять пропущенные плановые слоты при старте")
     a=p.parse_args()
     if a.cmd=="init":
         init_db(); print("База данных готова.")
     elif a.cmd=="import-csv":
-        n,sk=import_csv(a.file); print(f"Импортировано/обработано строк: {n}; пропущено: {sk}.")
+        added,updated,sk=import_csv(a.file); print(f"Добавлено: {added}; обновлено: {updated}; пропущено: {sk}.")
     elif a.cmd=="export":
         path,n=export(); print(f"Excel создан: {path}\nВсего записей: {n}")
     elif a.cmd=="inspect-eis":
@@ -63,5 +65,9 @@ def main():
         print(f"Карточек ЕИС проверено: {found}; новых подходящих добавлено/обновлено: {imported}; Excel: {report}")
     elif a.cmd=="schedule-eis":
         from .sources.eis_browser import run_once as run_eis_browser
-        run_schedule(run_eis_browser)
+        run_schedule(
+            run_eis_browser,
+            run_at_start=False if a.no_run_at_start else None,
+            catch_up=False if a.no_catch_up else None,
+        )
 if __name__=="__main__": main()

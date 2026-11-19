@@ -17,6 +17,9 @@ last_run.log
 # Ad-hoc local imports
 data/incoming*.csv
 
+# Scheduler state (local last-run timestamp)
+data/schedule_state.json
+
 # Office lock files and OS junk
 ~$*
 Thumbs.db

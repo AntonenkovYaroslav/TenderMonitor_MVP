@@ -101,8 +101,8 @@ def import_open_data(source: str) -> tuple[int, int, int]:
     imported = skipped = parsed = 0
     for content in files:
         rows = _read_csv(content)
-        count, rejected = import_rows(rows)
-        imported += count
+        added, updated, rejected = import_rows(rows)
+        imported += added + updated
         skipped += rejected
         parsed += len(rows)
     return imported, skipped, parsed

@@ -431,11 +431,12 @@ def run_once() -> tuple[int, int, Path]:
             existing_ids.add(notice_id)
             unseen.append(record)
 
-        imported, skipped = import_rows(unseen)
+        added, updated, skipped = import_rows(unseen)
+        imported = added + updated
         report, _ = export()
         logging.info(
-            "EIS summary: method=%s raw=%d filtered_out=%d matched=%d already_seen=%d imported=%d skipped=%d report=%s",
-            method, len(records), filtered_out, len(relevant), duplicates, imported, skipped, report,
+            "EIS summary: method=%s raw=%d filtered_out=%d matched=%d already_seen=%d added=%d updated=%d skipped=%d report=%s",
+            method, len(records), filtered_out, len(relevant), duplicates, added, updated, skipped, report,
         )
         return len(records), imported, report
     except Exception:

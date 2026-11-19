@@ -22,7 +22,10 @@ from ..db import session, init_db
 from ..importer import parse_price
 
 ALIASES = {
-    "source_id": {"purchasenumber", "regnumber", "registrationnumber", "purchaseid", "noticeid", "ikz"},
+    # ИКЗ (ikz) намеренно не используется как source_id: это 36-значный код
+    # позиции плана-графика, он длиннее номера извещения и при выборе «самого
+    # длинного значения» подменял бы номер закупки, ломая дедупликацию.
+    "source_id": {"purchasenumber", "regnumber", "registrationnumber", "purchaseid", "noticeid"},
     "title": {"purchaseobjectinfo", "purchaseobjectname", "objectinfo", "purchasename", "noticename", "docname", "lotname"},
     "price": {"maxprice", "initialmaxprice", "initialmaximumprice", "nmck", "nmckprice", "price", "maxcontractprice"},
     "address": {"deliveryplace", "placeofdelivery", "placeofwork", "workplace", "executionplace", "address", "workaddress"},

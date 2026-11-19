@@ -43,15 +43,23 @@ def parse_price(value):
         return None
 
 def import_rows(rows):
-    """Insert normalized rows; shared by local CSV and public-source adapters."""
+    """Insert normalized rows; shared by local CSV and public-source adapters.
+
+    Returns (added, updated, skipped): новые записи и обновления существующих
+    (upsert по паре source_id+url) считаются раздельно.
+    """
     init_db()
-    added = skipped = 0
+    added = updated = skipped = 0
     with session() as con:
         for row in rows:
             r = {k: str(row.get(k) or "").strip() for k in FIELDS + EXTRA_FIELDS}
             if not r["source_id"] or not r["title"]:
                 skipped += 1
                 continue
+            exists = con.execute(
+                "SELECT 1 FROM tenders WHERE source_id=? AND url=?",
+                (r["source_id"], r["url"]),
+            ).fetchone()
             price = parse_price(r["price"])
             c = classify(r)
             vals = [r[k] for k in FIELDS]
@@ -59,12 +67,17 @@ def import_rows(rows):
             vals += [c["category"],c["score"],c["relevance"],c["region_check"]]
             vals += [r["organizer"], r["deadline_time"], r["object_address"] or r["address"]]
             con.execute("INSERT INTO tenders (source_id,title,price,address,customer,deadline,contact_name,contact_phone,contact_email,url,region,description,published_at,category,score,relevance,region_check,organizer,deadline_time,object_address) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_id,url) DO UPDATE SET title=excluded.title,price=excluded.price,address=excluded.address,customer=excluded.customer,deadline=excluded.deadline,contact_name=excluded.contact_name,contact_phone=excluded.contact_phone,contact_email=excluded.contact_email,region=excluded.region,description=excluded.description,published_at=excluded.published_at,category=excluded.category,score=excluded.score,relevance=excluded.relevance,region_check=excluded.region_check,organizer=excluded.organizer,deadline_time=excluded.deadline_time,object_address=excluded.object_address", vals)
-            added += 1
-    return added, skipped
+            if exists:
+                updated += 1
+            else:
+                added += 1
+    return added, updated, skipped
 
 def import_csv(filename):
+    """Импорт локального CSV. Обязательны только колонки source_id и title;
+    остальные поля необязательны и подставляются пустыми (как в открытых данных)."""
     with Path(filename).open(encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
-        missing = [x for x in FIELDS if x not in (reader.fieldnames or [])]
-        if missing: raise ValueError("Нет колонок: " + ", ".join(missing))
+        missing = [x for x in ("source_id", "title") if x not in (reader.fieldnames or [])]
+        if missing: raise ValueError("Нет обязательных колонок: " + ", ".join(missing))
         return import_rows(reader)
