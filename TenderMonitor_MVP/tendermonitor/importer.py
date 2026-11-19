@@ -1,4 +1,5 @@
 import csv
+import re
 from pathlib import Path
 from .db import session, init_db
 from .classifier import classify
@@ -6,6 +7,40 @@ FIELDS = ["source_id","title","price","address","customer","deadline","contact_n
 # Extra columns filled by the EIS adapters; kept through normalization so the
 # organizer, submission time and object address are not silently dropped.
 EXTRA_FIELDS = ["organizer","deadline_time","object_address"]
+
+def parse_price(value):
+    """Число из строки вида «2 874 509,65 ₽».
+
+    Учитывает обычные/неразрывные/узкие пробелы, символы и слова валют (₽, руб.,
+    RUB и т.п. — просто отбрасываются вместе с нецифровым контекстом), запятую и
+    точку как разделитель дробной части. Если разделителей несколько, дробным
+    считается последний, остальные — разделители тысяч («1.234.567,89»).
+    Одиночный разделитель с тремя цифрами после него трактуется как тысячи
+    («1.234» -> 1234): цены ЕИС публикуются с двумя знаками после запятой.
+    Возвращает float или None, если числа в строке нет.
+    """
+    text = str(value or "").replace(chr(0xA0), " ").replace(chr(0x202F), " ").replace(chr(0x2009), " ")
+    match = re.search(r"\d[\d ]*(?:[.,]\d+)*", text)
+    if not match:
+        return None
+    num = match.group(0).replace(" ", "")
+    if "," in num and "." in num:
+        cut = max(num.rfind(","), num.rfind("."))
+        num = num[:cut].replace(",", "").replace(".", "") + "." + num[cut + 1:]
+    else:
+        sep = "," if "," in num else ("." if "." in num else "")
+        if sep:
+            parts = num.split(sep)
+            if len(parts) > 2 or len(parts[-1]) == 3:
+                num = "".join(parts)
+            elif len(parts[-1]) > 3:
+                return None
+            else:
+                num = ".".join(parts)
+    try:
+        return float(num)
+    except ValueError:
+        return None
 
 def import_rows(rows):
     """Insert normalized rows; shared by local CSV and public-source adapters."""
@@ -17,8 +52,7 @@ def import_rows(rows):
             if not r["source_id"] or not r["title"]:
                 skipped += 1
                 continue
-            try: price = float(r["price"].replace("\u00a0", "").replace(" ", "").replace(",", ".")) if r["price"] else None
-            except ValueError: price = None
+            price = parse_price(r["price"])
             c = classify(r)
             vals = [r[k] for k in FIELDS]
             vals[2] = price

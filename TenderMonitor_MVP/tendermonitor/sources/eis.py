@@ -19,6 +19,7 @@ import xml.etree.ElementTree as ET
 
 from ..classifier import classify
 from ..db import session, init_db
+from ..importer import parse_price
 
 ALIASES = {
     "source_id": {"purchasenumber", "regnumber", "registrationnumber", "purchaseid", "noticeid", "ikz"},
@@ -78,10 +79,8 @@ def _normalize_record(root: ET.Element, source_file: str) -> dict:
     row["_source_file"] = source_file
 
     raw_price = row.get("price", "")
-    if raw_price:
-        cleaned = raw_price.replace("\xa0", "").replace(" ", "").replace(",", ".")
-        match = re.search(r"\d+(?:\.\d+)?", cleaned)
-        row["price"] = match.group(0) if match else ""
+    price = parse_price(raw_price)
+    row["price"] = str(price) if price is not None else ""
     return row
 
 def iter_xml_files(path: str | Path) -> Iterable[tuple[str, bytes]]:
