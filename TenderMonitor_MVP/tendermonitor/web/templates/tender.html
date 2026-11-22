@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}{{ item['title']|clean }} — Tender Monitor{% endblock %}
+{% block content %}
+<p><a class="button ghost" href="{{ url_for('web.tenders') }}">← К списку закупок</a></p>
+<h1 class="wrap-text">{{ item['title']|clean }}</h1>
+<p class="muted">
+  № извещения: {{ item['source_id'] }} · найдена: {{ item['first_seen']|localdt }}
+  {% if item['url'] %} · <a href="{{ item['url'] }}" target="_blank" rel="noopener">открыть на zakupki.gov.ru</a>{% endif %}
+</p>
+
+<div class="card">
+  <table class="table kv">
+    <tr><th>НМЦК</th><td>{% if item['price'] is not none %}{{ item['price']|money }} ₽{% else %}—{% endif %}</td>
+        <th>Направление</th><td>{{ item['category']|clean or '—' }}</td></tr>
+    <tr><th>Релевантность</th><td>{{ item['relevance'] }} ({{ item['score'] }})</td>
+        <th>Регион</th><td>{{ item['region']|clean or '—' }}{% if item['region_check'] %} <span class="muted">({{ item['region_check'] }})</span>{% endif %}</td></tr>
+    <tr><th>Заказчик</th><td>{{ item['customer']|clean or '—' }}</td>
+        <th>Организатор</th><td>{{ item['organizer']|clean or '—' }}</td></tr>
+    <tr><th>Адрес объекта</th><td>{{ item['object_address']|clean or item['address']|clean or '—' }}</td>
+        <th>Срок подачи</th><td>{{ item['deadline']|ddate or '—' }}{% if item['deadline_time'] %} {{ item['deadline_time']|clean }}{% endif %}</td></tr>
+    <tr><th>Контактное лицо</th><td>{{ item['contact_name']|clean or '—' }}</td>
+        <th>Телефон / почта</th><td>{{ item['contact_phone']|clean or '—' }} / {{ item['contact_email']|clean or '—' }}</td></tr>
+    <tr><th>Опубликовано</th><td>{{ item['published_at']|ddate or '—' }}</td>
+        <th>Ссылка</th><td>{% if item['url'] %}<a class="url" href="{{ item['url'] }}" target="_blank" rel="noopener">{{ item['url'] }}</a>{% else %}—{% endif %}</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Оценка релевантности</h2>
+  <p>
+    <span class="badge {{ 'rel-high' if item['relevance'] == 'Высокая' else ('rel-mid' if item['relevance'] == 'Средняя' else 'rel-low') }}">{{ item['relevance'] }}</span>
+    <b>{{ item['score'] }}</b> <span class="muted">баллов из 100</span>
+  </p>
+  <ul class="meta explain">
+    <li><span class="k">Заголовок · {{ explanation.weights.title_weight }} за фразу</span> <span class="v">{{ explanation.title_phrases|join(', ') or 'совпадений нет' }}</span></li>
+    <li><span class="k">Описание, адрес, заказчик · {{ explanation.weights.other_weight }} за фразу</span> <span class="v">{{ explanation.other_phrases|join(', ') or 'совпадений нет' }}</span></li>
+    <li><span class="k">Регион</span> <span class="v">{% if explanation.region_ok %}подтверждён: +{{ explanation.weights.region_bonus }}{% else %}не подтверждён: −{{ explanation.weights.region_penalty }}{% endif %}</span></li>
+    {% if explanation.stop_phrases %}
+    <li><span class="k">Стоп-фразы в заголовке</span> <span class="v">{{ explanation.stop_phrases|join(', ') }}: −{{ explanation.weights.stop_penalty }} (нерелевантный шум профиля)</span></li>
+    {% endif %}
+    <li><span class="k">Расчёт</span> <span class="v">{{ explanation.title_phrases|length }}×{{ explanation.weights.title_weight }} + {{ explanation.other_phrases|length }}×{{ explanation.weights.other_weight }} {% if explanation.region_ok %}+ {{ explanation.weights.region_bonus }}{% else %}− {{ explanation.weights.region_penalty }}{% endif %}{% if explanation.stop_phrases %} − {{ explanation.weights.stop_penalty }}{% endif %} = {{ explanation.raw_score }}{% if explanation.raw_score < 0 %} → 0 (балл не бывает отрицательным){% elif explanation.raw_score > 100 %} → 100 (потолок){% endif %}</span></li>
+    <li><span class="k">Пороги</span> <span class="v">«Высокая» ≥ {{ explanation.thresholds.get('high', 65) }}, «Средняя» ≥ {{ explanation.thresholds.get('medium', 35) }}, ниже — «Низкая»</span></li>
+    <li><span class="k">Направление</span> <span class="v">{{ explanation.category }}{% if explanation.category == 'Не определено' %} — ни одна группа ключевых слов не совпала{% else %} — группа с наибольшим числом совпавших фраз{% endif %}</span></li>
+    <li><span class="k">Проверка региона</span> <span class="v">{{ explanation.region_check }}: список из {{ explanation.regions|length }} названий и городов сверяется с регионом и адресом карточки{% if not explanation.region_ok and not (item['region']|clean) and not (item['address']|clean) %}; источник не передал ни регион, ни адрес — сверять не с чем{% endif %}</span></li>
+  </ul>
+  {% if explanation.score != item['score'] %}
+  <p class="hint">В базе сохранена оценка {{ item['score'] }} — она рассчитана при прежних настройках или версии классификатора. Пересчёт по текущему конфигу даёт {{ explanation.score }}; оценка обновится при следующем сборе этой закупки.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Описание</h2>
+  <p class="pre">{{ item['description']|clean or '—' }}</p>
+</div>
+
+<div class="card">
+  <h2>Заметка оператора</h2>
+  {% if can_edit %}
+  <form method="post" action="{{ url_for('web.save_note', tender_id=item['id']) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <textarea name="note" rows="4" placeholder="Своё наблюдение, ответственный, следующий шаг">{{ item['note'] or '' }}</textarea>
+    <button type="submit" class="primary">Сохранить заметку</button>
+  </form>
+  {% else %}
+  <p class="pre">{{ item['note'] or '—' }}</p>
+  {% endif %}
+</div>
+{% endblock %}

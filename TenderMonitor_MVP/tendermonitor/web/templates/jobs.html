@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Задания — Tender Monitor{% endblock %}
+{% block content %}
+<h1>Задания</h1>
+{% if items %}
+<table class="table">
+  <thead><tr><th>#</th><th>Тип</th><th>Статус</th><th>Параметры</th><th>Кто</th><th>Начало</th><th>Финиш</th><th>Итог</th></tr></thead>
+  <tbody>
+  {% for job in items %}
+    <tr>
+      <td><a href="{{ url_for('web.job', job_id=job['id']) }}">#{{ job['id'] }}</a></td>
+      <td>{{ 'сбор ЕИС' if job['kind'] == 'collect' else 'экспорт Excel' }}</td>
+      <td><span class="badge st-{{ job['status'] }}">{{ job['status'] }}</span></td>
+      <td class="muted">
+        {% if job['params'].get('region') %}регион: {{ job['params'].get('region') }}{% endif %}
+        {% if job['params'].get('limit') %}, лимит: {{ job['params'].get('limit') }}{% endif %}
+        {% if job['params'].get('keywords') %}, слова: {{ job['params'].get('keywords') }}{% endif %}
+        {% if job['params'].get('category') %}, направление: {{ job['params'].get('category') }}{% endif %}
+      </td>
+      <td>{{ job['created_by'] }}</td>
+      <td>{{ job['started_at'] or '—' }}</td>
+      <td>{{ job['finished_at'] or '—' }}</td>
+      <td class="muted">{{ job['summary'] }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">Заданий пока нет.</p>
+{% endif %}
+{% endblock %}

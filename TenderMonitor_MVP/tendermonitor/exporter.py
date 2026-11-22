@@ -24,7 +24,8 @@ def export():
             FROM tenders AS current
             WHERE current.id = (
                 SELECT MAX(previous.id) FROM tenders AS previous
-                WHERE previous.source_id = current.source_id
+                WHERE COALESCE(previous.canonical_key, 'row:' || previous.id)
+                    = COALESCE(current.canonical_key, 'row:' || current.id)
             )
             ORDER BY score DESC, deadline
         """).fetchall()

@@ -8,6 +8,10 @@ data/*.db
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm
+data/*.bak
+
+# Web panel: users, sessions and the cookie signing key
+data/app_secret.key
 
 # Generated reports and logs (recreated on every run)
 reports/

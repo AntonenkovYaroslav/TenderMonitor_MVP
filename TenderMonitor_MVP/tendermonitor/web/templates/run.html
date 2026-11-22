@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Запуск сбора — Tender Monitor{% endblock %}
+{% block content %}
+<h1>Запуск сбора закупок</h1>
+<p class="muted">Сбор выполняется отдельным процессом в фоне: панель остаётся отзывчивой, прогресс и итог — в разделе «Задания».</p>
+
+{% if running %}
+<div class="flash warning">Сейчас выполняется задание #{{ running['id'] }} ({{ running['kind'] }}, статус: {{ running['status'] }}).
+  <a href="{{ url_for('web.job', job_id=running['id']) }}">Открыть задание</a></div>
+{% endif %}
+
+<form class="card" method="post" action="{{ url_for('web.run') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <div class="grid">
+    <label>Регион / поисковый запрос
+      <input type="text" name="region" value="{{ defaults['region'] }}" placeholder="{{ config.get('region','') }}">
+      <span class="hint">Строка запроса к поиску ЕИС. Пусто — значение из config/keywords.json.</span>
+    </label>
+    <label>Лимит карточек
+      <input type="number" name="limit" min="1" max="5000" value="{{ defaults['limit'] }}">
+      <span class="hint">Общий лимит карточек за запуск (1–5000). Пусто/по умолчанию — из настроек панели.</span>
+    </label>
+    <label>Страниц поиска
+      <input type="number" name="pages" min="1" max="50" value="" placeholder="{{ search.max_pages }}">
+      <span class="hint">Сколько страниц результатов читать. Пусто — search.max_pages из конфига ({{ search.max_pages }}).</span>
+    </label>
+    <label>Карточек на странице
+      <input type="number" name="per_page" min="10" max="200" step="10" value="" placeholder="{{ search.records_per_page }}">
+      <span class="hint">Размер страницы ЕИС: 10/20/50/100/200. Пусто — search.records_per_page ({{ search.records_per_page }}).</span>
+    </label>
+    <label>Окно публикации, дней
+      <input type="number" name="days" min="0" max="3650" value="" placeholder="{{ search.published_days }}">
+      <span class="hint">Искать извещения, опубликованные за последние N дней; 0 — без ограничения. Пусто — search.published_days ({{ search.published_days }}).</span>
+    </label>
+    <label>Дополнительные ключевые слова
+      <input type="text" name="keywords" placeholder="например: бордюр, ямочный ремонт">
+      <span class="hint">Через запятую. Добавляются к группам из конфига отдельной группой «Ключевые слова».</span>
+    </label>
+    <label>Только направление
+      <select name="category">
+        <option value="">любое</option>
+        {% for name in categories %}
+        <option value="{{ name }}">{{ name }}</option>
+        {% endfor %}
+      </select>
+      <span class="hint">Оставить только закупки выбранного направления.</span>
+    </label>
+  </div>
+  <button type="submit" class="primary" {% if running %}disabled{% endif %}>Запустить сбор</button>
+</form>
+
+<div class="card">
+  <h2>Как это работает</h2>
+  <ul class="list">
+    <li>Задание запускает ту же команду, что и консоль: <code>python -m tendermonitor.cli monitor-eis</code> — с параметрами <code>--region</code>, <code>--limit</code>, <code>--pages</code>, <code>--per-page</code>, <code>--days</code>, <code>--keywords</code>, <code>--category</code>.</li>
+    <li>Глубина и сроки поиска по умолчанию берутся из блока <code>search</code> в <code>config/keywords.json</code>; поля формы переопределяют их на один запуск. Больше страниц/карточек — дольше сбор.</li>
+    <li>Сбор оставляет закупки с подтверждённым регионом и релевантностью не ниже «Средняя»; просроченные по сроку подачи пропускаются (если включено <code>search.skip_expired</code>).</li>
+    <li>Обычный сбор занимает 1–2 минуты, панель при этом работает; статус и лог — на странице задания.</li>
+    <li>Найденные закупки попадают в ту же базу <code>data/tenders.db</code> и в Excel-отчёт.</li>
+    <li>Одновременно выполняется только одно задание — повторный запуск блокируется.</li>
+  </ul>
+</div>
+{% endblock %}

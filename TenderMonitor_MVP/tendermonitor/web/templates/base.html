@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Tender Monitor{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+{% block head %}{% endblock %}
+</head>
+<body>
+{% if current_user %}
+<header class="topbar">
+  <div class="brand">Tender&nbsp;Monitor</div>
+  <nav>
+    <a href="{{ url_for('web.tenders') }}" {% if request.endpoint == 'web.tenders' %}class="active"{% endif %}>Закупки</a>
+    {% if can_run %}
+    <a href="{{ url_for('web.run') }}" {% if request.endpoint == 'web.run' %}class="active"{% endif %}>Сбор</a>
+    <a href="{{ url_for('web.job_list') }}" {% if request.endpoint in ('web.job_list', 'web.job') %}class="active"{% endif %}>Задания</a>
+    {% endif %}
+    {% if can_manage %}
+    <a href="{{ url_for('web.users') }}" {% if request.endpoint == 'web.users' %}class="active"{% endif %}>Пользователи</a>
+    <a href="{{ url_for('web.settings_page') }}" {% if request.endpoint == 'web.settings_page' %}class="active"{% endif %}>Настройки</a>
+    {% endif %}
+  </nav>
+  <div class="userbox">
+    <span class="who">{{ current_user['login'] }} · {{ role_labels[current_user['role']] }}</span>
+    <a href="{{ url_for('web.account_password') }}">Пароль</a>
+    <form method="post" action="{{ url_for('web.logout') }}" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="link" type="submit">Выйти</button>
+    </form>
+  </div>
+</header>
+{% endif %}
+<main class="wrap">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div class="flashes">
+      {% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}
+    </div>
+    {% endif %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

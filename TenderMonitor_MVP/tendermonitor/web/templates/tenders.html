@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}Закупки — Tender Monitor{% endblock %}
+{% block content %}
+<h1>Закупки</h1>
+
+<form class="filters card" method="get" action="{{ url_for('web.tenders') }}">
+  <div class="grid">
+    <label>Поиск по тексту<input type="text" name="q" value="{{ filters.get('q','') }}" placeholder="название, заказчик, описание, номер"></label>
+    <label>Направление
+      <select name="category">
+        <option value="">любое</option>
+        {% for name in categories %}
+        <option value="{{ name }}" {% if filters.get('category','') == name %}selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Релевантность
+      <select name="relevance">
+        <option value="">любая</option>
+        {% for name in ['Высокая','Средняя','Низкая'] %}
+        <option value="{{ name }}" {% if filters.get('relevance','') == name %}selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Проверка региона
+      <select name="region_check">
+        <option value="">любая</option>
+        <option value="Проверить регион" {% if filters.get('region_check','') == 'Проверить регион' %}selected{% endif %}>Проверить регион</option>
+      </select>
+    </label>
+    <label>Регион (текстом)<input type="text" name="region" value="{{ filters.get('region','') }}" placeholder="Калининградская"></label>
+    <label>Цена от, ₽<input type="text" name="price_min" value="{{ filters.get('price_min','') }}"></label>
+    <label>Цена до, ₽<input type="text" name="price_max" value="{{ filters.get('price_max','') }}"></label>
+    <label>Обнаружена с<input type="date" name="date_from" value="{{ filters.get('date_from','') }}"></label>
+    <label>Обнаружена по<input type="date" name="date_to" value="{{ filters.get('date_to','') }}"></label>
+  </div>
+  <div class="actions">
+    <button type="submit" class="primary">Применить фильтры</button>
+    <a class="button ghost" href="{{ url_for('web.tenders') }}">Сбросить</a>
+  </div>
+</form>
+{# Экспорт — отдельная форма: вложенные form браузер выбрасывает, и её
+   csrf_token попадал в GET-параметры фильтра, а оттуда в ссылки пагинации. #}
+{% if can_run %}
+<form method="post" action="{{ url_for('web.export') }}" class="toolbar">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <button type="submit" class="ghost">Экспорт Excel</button>
+</form>
+{% endif %}
+
+<div class="stats">
+  <div class="stat"><span class="num">{{ total }}</span><span class="label">закупок по фильтру</span></div>
+  <div class="stat"><span class="num">{{ counts.get('Высокая', 0) }}</span><span class="label">высокая</span></div>
+  <div class="stat"><span class="num">{{ counts.get('Средняя', 0) }}</span><span class="label">средняя</span></div>
+  <div class="stat"><span class="num">{{ counts.get('Низкая', 0) }}</span><span class="label">низкая</span></div>
+  <div class="stat"><span class="num">{{ region_check_count }}</span><span class="label">проверить регион</span></div>
+</div>
+
+<details class="card scoring">
+  <summary>Как формируется релевантность и проверка региона</summary>
+  <div class="scoring-body">
+    <p>Классификатор сопоставляет ключевые фразы из {{ scoring.groups|length }} направлений
+      («{{ scoring.groups|join('», «') }}») по основам слов: «ремонт дороги» находит «ремонта дороги».
+      Совпадение в заголовке даёт <b>{{ scoring.weights.title_weight }}</b> баллов, в описании/адресе/заказчике — <b>{{ scoring.weights.other_weight }}</b>.
+      Подтверждённый регион добавляет <b>+{{ scoring.weights.region_bonus }}</b>, неподтверждённый отнимает <b>{{ scoring.weights.region_penalty }}</b>;
+      итог ограничивается диапазоном 0–100.</p>
+    <p>Стоп-фразы профиля ({{ scoring.stop_phrases|length }} шт.: {{ scoring.stop_phrases[:6]|join(', ') }}…)
+      в заголовке снижают балл на <b>{{ scoring.weights.stop_penalty }}</b> — так отсекается нерелевантный шум
+      (мебель, ИТ-оборудование, ГСМ, питание, клининг). Отрицания («не», «без», «кроме», «исключая»)
+      рядом с фразой отменяют совпадение. Веса и пороги настраиваются в <code>config/keywords.json</code>.</p>
+    <p>Пороги: «Высокая» — от {{ scoring.thresholds.get('high', 65) }} баллов,
+      «Средняя» — от {{ scoring.thresholds.get('medium', 35) }}, ниже — «Низкая».
+      Направление — группа с наибольшим числом совпавших фраз; если совпадений нет вовсе,
+      ставится «Не определено», а балл без региона опускается до нуля.</p>
+    <p>Регион проверяется по списку из {{ scoring.regions|length }} названий и городов
+      ({{ scoring.regions[:5]|join(', ') }}…): сравниваются поле региона и адрес карточки.
+      {% if scoring.region %}Регион поиска: «{{ scoring.region }}». {% endif %}
+      Если источник не передал регион и адрес (так бывает у RSS-ленты и урезанных выгрузок
+      открытых данных), проверить его не по чему — карточка получает метку «Проверить регион»,
+      а поля цены/заказчика/срока остаются пустыми: в таком источнике их просто нет.
+      Пустые поля в списке скрыты; полные данные смотрите по ссылке на ЕИС.</p>
+  </div>
+</details>
+
+{% if items %}
+<div class="cards">
+  {% for item in items %}
+    {% set title_text = item['title']|clean %}
+    {% set customer_text = item['customer']|clean or item['organizer']|clean %}
+    {% set region_text = item['region']|clean %}
+    {% set deadline_text = item['deadline']|ddate %}
+    <article class="tcard">
+      <div class="tcard-top">
+        <span class="badge {{ 'rel-high' if item['relevance'] == 'Высокая' else ('rel-mid' if item['relevance'] == 'Средняя' else 'rel-low') }}">{{ item['relevance'] }}</span>
+        <span class="badge cat">{{ item['category']|clean or 'Не определено' }}</span>
+        <span class="muted score">балл {{ item['score'] }}</span>
+      </div>
+      <h3 class="tcard-title" title="{{ title_text }}"><a class="clamp clamp-3" href="{{ url_for('web.tender', tender_id=item['id']) }}">{{ title_text }}</a></h3>
+      {% if item['price'] is not none or region_text or customer_text or deadline_text %}
+      <ul class="meta">
+        {% if item['price'] is not none %}<li><span class="k">НМЦК</span> <span class="v nowrap">{{ item['price']|money }} ₽</span></li>{% endif %}
+        {% if region_text %}<li><span class="k">Регион</span> <span class="v">{{ region_text }}</span></li>{% endif %}
+        {% if customer_text %}<li><span class="k">Заказчик</span> <span class="v clamp clamp-2" title="{{ customer_text }}">{{ customer_text }}</span></li>{% endif %}
+        {% if deadline_text %}<li><span class="k">Срок подачи</span> <span class="v">{{ deadline_text }}{% if item['deadline_time'] %} {{ item['deadline_time']|clean }}{% endif %}</span></li>{% endif %}
+      </ul>
+      {% endif %}
+      <div class="tcard-foot">
+        {% if item['url'] %}<a href="{{ item['url'] }}" target="_blank" rel="noopener">Открыть на ЕИС</a>{% endif %}
+        {% if item['score'] == 0 %}
+        {% if item.get('stop_phrases') %}
+        <span class="muted">Стоп-фразы профиля: {{ item['stop_phrases']|join(', ') }} — оценка 0</span>
+        {% else %}
+        <span class="muted">Ключевые слова не совпали{% if not region_text %}, регион не подтверждён{% endif %} — оценка 0</span>
+        {% endif %}
+        {% elif not region_text %}
+        <span class="muted">Регион не указан в источнике</span>
+        {% endif %}
+      </div>
+    </article>
+  {% endfor %}
+</div>
+
+<div class="pager">
+  {% if page > 1 %}<a class="button ghost" href="{{ url_for('web.tenders', page=page-1, **query_args) }}">← Назад</a>{% endif %}
+  <span class="muted">Страница {{ page }} из {{ pages }} (показано {{ items|length }} из {{ total }})</span>
+  {% if page < pages %}<a class="button ghost" href="{{ url_for('web.tenders', page=page+1, **query_args) }}">Вперёд →</a>{% endif %}
+</div>
+{% else %}
+<p class="muted">По заданным фильтрам ничего не найдено.</p>
+{% endif %}
+{% endblock %}

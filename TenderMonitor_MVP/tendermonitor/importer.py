@@ -1,7 +1,8 @@
 import csv
 import re
 from pathlib import Path
-from .db import session, init_db
+from .db import session, init_db, MERGE_FIELDS
+from .dedup import canonical_key, merge_values
 from .classifier import classify
 FIELDS = ["source_id","title","price","address","customer","deadline","contact_name","contact_phone","contact_email","url","region","description","published_at"]
 # Extra columns filled by the EIS adapters; kept through normalization so the
@@ -45,8 +46,10 @@ def parse_price(value):
 def import_rows(rows):
     """Insert normalized rows; shared by local CSV and public-source adapters.
 
-    Returns (added, updated, skipped): новые записи и обновления существующих
-    (upsert по паре source_id+url) считаются раздельно.
+    Сквозная дедупликация: запись ищется по каноническому ключу (номер
+    извещения / guid / fallback source_id+URL). Найденная запись обновляется
+    слиянием полей — заполненные значения и заметка note сохраняются, пустые
+    поля дозаполняются из нового источника. Returns (added, updated, skipped).
     """
     init_db()
     added = updated = skipped = 0
@@ -56,20 +59,35 @@ def import_rows(rows):
             if not r["source_id"] or not r["title"]:
                 skipped += 1
                 continue
-            exists = con.execute(
-                "SELECT 1 FROM tenders WHERE source_id=? AND url=?",
-                (r["source_id"], r["url"]),
+            r["object_address"] = r["object_address"] or r["address"]
+            r["price"] = parse_price(r["price"])  # float или None
+            key = canonical_key(r["source_id"], r["url"])
+            existing = con.execute(
+                "SELECT * FROM tenders WHERE canonical_key=?", (key,)
             ).fetchone()
-            price = parse_price(r["price"])
-            c = classify(r)
-            vals = [r[k] for k in FIELDS]
-            vals[2] = price
-            vals += [c["category"],c["score"],c["relevance"],c["region_check"]]
-            vals += [r["organizer"], r["deadline_time"], r["object_address"] or r["address"]]
-            con.execute("INSERT INTO tenders (source_id,title,price,address,customer,deadline,contact_name,contact_phone,contact_email,url,region,description,published_at,category,score,relevance,region_check,organizer,deadline_time,object_address) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_id,url) DO UPDATE SET title=excluded.title,price=excluded.price,address=excluded.address,customer=excluded.customer,deadline=excluded.deadline,contact_name=excluded.contact_name,contact_phone=excluded.contact_phone,contact_email=excluded.contact_email,region=excluded.region,description=excluded.description,published_at=excluded.published_at,category=excluded.category,score=excluded.score,relevance=excluded.relevance,region_check=excluded.region_check,organizer=excluded.organizer,deadline_time=excluded.deadline_time,object_address=excluded.object_address", vals)
-            if exists:
+            if existing is not None:
+                merged = merge_values(dict(existing), r, MERGE_FIELDS)
+                c = classify(merged)
+                merged.update(c)
+                fields = MERGE_FIELDS + ("category", "score", "relevance", "region_check")
+                assignments = ", ".join(f"{f}=?" for f in fields)
+                con.execute(
+                    f"UPDATE tenders SET {assignments} WHERE id=?",
+                    [merged.get(f) for f in fields] + [existing["id"]],
+                )
                 updated += 1
             else:
+                c = classify(r)
+                fields = FIELDS + ["category", "score", "relevance", "region_check",
+                                   "organizer", "deadline_time", "object_address", "canonical_key"]
+                values = [r.get(f) for f in FIELDS]
+                values += [c["category"], c["score"], c["relevance"], c["region_check"],
+                           r["organizer"], r["deadline_time"], r["object_address"], key]
+                columns = ",".join(fields)
+                placeholders = ",".join("?" for _ in fields)
+                con.execute(
+                    f"INSERT INTO tenders ({columns}) VALUES ({placeholders})", values
+                )
                 added += 1
     return added, updated, skipped
 

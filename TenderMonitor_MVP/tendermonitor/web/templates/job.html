@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block head %}{% if item['status'] in ('queued', 'running') %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
+{% block title %}Задание #{{ item['id'] }} — Tender Monitor{% endblock %}
+{% block content %}
+<h1>Задание #{{ item['id'] }} — {{ 'сбор ЕИС' if item['kind'] == 'collect' else 'экспорт Excel' }}</h1>
+<p class="muted">
+  Статус: <span class="badge st-{{ item['status'] }}">{{ item['status'] }}</span>
+  · запустил: {{ item['created_by'] }}
+  · начало: {{ item['started_at'] or '—' }}
+  · финиш: {{ item['finished_at'] or '—' }}
+  {% if item['exit_code'] is not none %} · код: {{ item['exit_code'] }}{% endif %}
+</p>
+
+{% if item['status'] in ('queued', 'running') %}
+<form method="post" action="{{ url_for('web.job_cancel', job_id=item['id']) }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <button type="submit" class="danger">Остановить задание</button>
+</form>
+{% endif %}
+
+<div class="card">
+  <h2>Параметры</h2>
+  <p class="pre">{{ item['params'] }}</p>
+  <p class="muted">{{ item['summary'] }}</p>
+</div>
+
+<div class="card">
+  <h2>Журнал выполнения</h2>
+  <pre class="log">{{ log or 'Журнал пуст.' }}</pre>
+</div>
+
+<p><a class="button ghost" href="{{ url_for('web.job_list') }}">← Все задания</a></p>
+{% endblock %}

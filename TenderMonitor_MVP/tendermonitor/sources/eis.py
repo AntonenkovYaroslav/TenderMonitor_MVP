@@ -17,8 +17,6 @@ from pathlib import Path
 from typing import Iterable
 import xml.etree.ElementTree as ET
 
-from ..classifier import classify
-from ..db import session, init_db
 from ..importer import parse_price
 
 ALIASES = {
@@ -115,49 +113,15 @@ def parse_package(path: str | Path) -> tuple[list[dict], list[str]]:
     return records, errors
 
 def import_package(path: str | Path) -> tuple[int, int, list[str]]:
-    init_db()
-    records, errors = parse_package(path)
-    saved = 0
-    with session() as con:
-        for row in records:
-            row.pop("_source_file", None)
-            classified = classify(row)
-            try:
-                price = float(row["price"]) if row.get("price") else None
-            except ValueError:
-                price = None
+    """Импорт XML/ZIP через общий импортёр: сквозная дедупликация по
+    каноническому ключу и слияние полей работают так же, как для CSV/RSS."""
+    from ..importer import import_rows
 
-            values = (
-                row.get("source_id", ""), row.get("title", ""), price,
-                row.get("address", ""), row.get("customer", ""),
-                row.get("deadline", ""), row.get("contact_name", ""),
-                row.get("contact_phone", ""), row.get("contact_email", ""),
-                row.get("url", ""), row.get("region", ""),
-                row.get("description", ""), row.get("published_at", ""),
-                classified["category"], classified["score"],
-                classified["relevance"], classified["region_check"],
-                row.get("organizer", ""), row.get("deadline_time", ""),
-                row.get("object_address", row.get("address", ""))
-            )
-            con.execute("""
-                INSERT INTO tenders (
-                    source_id,title,price,address,customer,deadline,contact_name,
-                    contact_phone,contact_email,url,region,description,published_at,
-                    category,score,relevance,region_check,organizer,deadline_time,object_address
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(source_id,url) DO UPDATE SET
-                    title=excluded.title, price=excluded.price,
-                    address=excluded.address, customer=excluded.customer,
-                    deadline=excluded.deadline, contact_name=excluded.contact_name,
-                    contact_phone=excluded.contact_phone, contact_email=excluded.contact_email,
-                    region=excluded.region, description=excluded.description,
-                    published_at=excluded.published_at, category=excluded.category,
-                    score=excluded.score, relevance=excluded.relevance,
-                    region_check=excluded.region_check, organizer=excluded.organizer,
-                    deadline_time=excluded.deadline_time, object_address=excluded.object_address
-            """, values)
-            saved += 1
-    return saved, len(records), errors
+    records, errors = parse_package(path)
+    for row in records:
+        row.pop("_source_file", None)
+    added, updated, _skipped = import_rows(records)
+    return added + updated, len(records), errors
 
 def inspect_package(path: str | Path) -> tuple[int, list[str], list[dict]]:
     records, errors = parse_package(path)

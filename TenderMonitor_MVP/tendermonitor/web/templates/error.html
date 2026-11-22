@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Ошибка — Tender Monitor{% endblock %}
+{% block content %}
+<div class="card narrow">
+  <h1>Ошибка {{ error.code if error else '' }}</h1>
+  <p>{{ error.description if error and error.description else 'Что-то пошло не так.' }}</p>
+  <p><a class="button ghost" href="{{ url_for('web.tenders') }}">К списку закупок</a></p>
+</div>
+{% endblock %}

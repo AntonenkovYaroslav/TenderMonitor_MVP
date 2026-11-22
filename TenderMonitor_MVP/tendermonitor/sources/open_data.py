@@ -9,6 +9,7 @@ import zipfile
 from pathlib import Path
 from urllib.parse import quote
 
+from ..config import ssl_contexts
 from ..importer import import_rows
 
 ALIASES = {
@@ -75,9 +76,19 @@ def _read_csv(payload: bytes) -> list[dict]:
 
 def _download(source: str) -> bytes:
     if source.lower().startswith(("http://", "https://")):
-        request = urllib.request.Request(source, headers={"User-Agent": "TenderMonitorMVP/0.2 (public open-data importer)"})
-        with urllib.request.urlopen(request, timeout=45) as response:
-            payload = response.read(250 * 1024 * 1024 + 1)
+        # TLS: системное доверие, затем bundled CA (российские госсайты).
+        # Проверка сертификатов не отключается ни в одном из контекстов.
+        last_error = None
+        for context in ssl_contexts():
+            try:
+                request = urllib.request.Request(source, headers={"User-Agent": "TenderMonitorMVP/0.2 (public open-data importer)"})
+                with urllib.request.urlopen(request, timeout=45, context=context) as response:
+                    payload = response.read(250 * 1024 * 1024 + 1)
+                break
+            except Exception as exc:  # noqa: BLE001 - пробуем следующий контекст
+                last_error = exc
+        else:
+            raise last_error if last_error else RuntimeError("не удалось получить URL")
     else:
         payload = Path(source).read_bytes()
     if len(payload) > 250 * 1024 * 1024:

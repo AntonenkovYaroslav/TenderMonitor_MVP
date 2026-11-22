@@ -1,23 +1,28 @@
 """Read public EIS procurement pages with a locally installed Playwright browser."""
 from __future__ import annotations
 
+import copy
 import logging
 import re
+import ssl
 import subprocess
 import sys
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta
 from html import unescape
+from pathlib import Path
 
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
-from ..config import settings
+from ..config import ROOT, settings, search_settings
 from ..db import session, init_db
+from ..dedup import canonical_key
 from ..exporter import export
 from ..importer import import_rows
 
-SEARCH_URL = "https://zakupki.gov.ru/epz/order/extendedsearch/results.html?recordsPerPage=_50"
+RESULTS_URL = "https://zakupki.gov.ru/epz/order/extendedsearch/results.html"
 NOTICE_PATH = re.compile(r"/epz/order/notice/[^\"'?#]+/view/common-info\.html", re.I)
 RSS_URL = "https://zakupki.gov.ru/epz/order/extendedsearch/rss.html"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0"
@@ -186,111 +191,236 @@ def _page_pairs(page) -> dict:
         list(_PAIR_LABELS),
     )
 
-def _read_rss_records(region: str = "") -> list[dict]:
-    """Read the EIS public search feed and normalize entries for the existing importer."""
-    query = urllib.parse.urlencode({
-        "searchString": region,
-        "morphology": "on",
-        "pageNumber": "1",
-        "recordsPerPage": "_50",
-        "fz44": "on",
-        "fz223": "on",
-    })
-    request = urllib.request.Request(
-        f"{RSS_URL}?{query}",
-        headers={"User-Agent": USER_AGENT, "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml"},
-    )
-    with urllib.request.urlopen(request, timeout=45) as response:
-        xml_data = response.read()
-    root = ET.fromstring(xml_data)
-    entries = root.findall(".//item")
-    if not entries:
-        entries = root.findall(".//{http://www.w3.org/2005/Atom}entry")
+# --- параметры глубины и сроков поиска ----------------------------------------
 
-    records = []
-    for item in entries:
-        def value(name: str) -> str:
-            node = item.find(name)
-            if node is None:
-                node = item.find(f"{{http://www.w3.org/2005/Atom}}{name}")
-            if node is None:
-                return ""
-            if name == "link" and not (node.text or "").strip():
-                return node.attrib.get("href", "").strip()
-            return (node.text or "").strip()
+def _date_window(published_days: int) -> dict:
+    """Окно публикации извещения: publishDateFrom/To в формате ДД.ММ.ГГГГ.
+    published_days=0 — без ограничения по дате."""
+    if not published_days or published_days <= 0:
+        return {}
+    today = datetime.now()
+    start = today - timedelta(days=int(published_days))
+    return {"publishDateFrom": start.strftime("%d.%m.%Y"), "publishDateTo": today.strftime("%d.%m.%Y")}
 
-        def clean(text: str) -> str:
-            text = re.sub(r"<(?:br\s*/?|/p|/div|/li|/tr)\s*>", "\n", text, flags=re.I)
-            text = unescape(re.sub(r"<[^>]+>", " ", text))
-            return "\n".join(re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip())
+def _results_url(region: str, per_page: int, page_number: int, window: dict) -> str:
+    params = {
+        "searchString": region, "morphology": "on", "pageNumber": str(page_number),
+        "recordsPerPage": f"_{per_page}", "fz44": "on", "fz223": "on", **window,
+    }
+    return f"{RESULTS_URL}?{urllib.parse.urlencode(params)}"
 
-        def fields(*names: str) -> str:
-            wanted = {name.lower().replace("ё", "е") for name in names}
-            for node in item.iter():
-                tag = node.tag.rsplit("}", 1)[-1].split(":")[-1].lower().replace("ё", "е")
-                if tag in wanted and (node.text or "").strip():
-                    return clean(node.text or "")
-            return ""
+def _rss_ssl_context(ca_bundle: str):
+    """TLS-контекст для RSS. По умолчанию — системное доверие; при корпоративном
+    TLS-прокси можно указать путь к CA-сертификату (search.ca_bundle). Проверка
+    сертификата не отключается. Относительный путь считается от корня проекта,
+    чтобы настройка переживала clone/ZIP и запуск из любого каталога."""
+    if ca_bundle:
+        path = Path(ca_bundle)
+        if not path.is_absolute():
+            path = ROOT / path
+        return ssl.create_default_context(cafile=str(path))
+    return ssl.create_default_context()
 
-        title = clean(value("title"))
-        link = value("link")
-        guid = value("guid") or value("id")
-        description_raw = value("description") or value("summary")
-        description = clean(description_raw)
-        source_match = re.search(r"\d{19}", " ".join((guid, link, title)))
-        if not title or not source_match or not link:
+def _is_expired(deadline: str, today: datetime | None = None) -> bool:
+    """Срок подачи уже прошёл (дата раньше сегодня). Пустой/нераспознанный срок
+    не считается просроченным — такие записи оставляем на проверку."""
+    text = (deadline or "").strip()
+    if not text:
+        return False
+    moment = None
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+        try:
+            moment = datetime.strptime(text[:10], fmt)
+            break
+        except ValueError:
             continue
+    if moment is None:
+        return False
+    today = today or datetime.now()
+    return moment.date() < today.date()
 
-        searchable = "\n".join((title, description))
-        def labelled(*labels: str) -> str:
-            explicit = fields(*labels)
-            if explicit:
-                return explicit
-            label_pattern = "|".join(re.escape(label) for label in labels)
-            match = re.search(rf"(?:{label_pattern})\s*[:：\-]?\s*([^\n;|]+)", searchable, re.I)
-            return match.group(1).strip() if match else ""
+def _parse_rss_item(item, region: str) -> dict | None:
+    """Нормализация одной записи RSS/Atom под существующий импортёр."""
+    def value(name: str) -> str:
+        node = item.find(name)
+        if node is None:
+            node = item.find(f"{{http://www.w3.org/2005/Atom}}{name}")
+        if node is None:
+            return ""
+        if name == "link" and not (node.text or "").strip():
+            return node.attrib.get("href", "").strip()
+        return (node.text or "").strip()
 
-        raw_price = labelled("НМЦК", "Начальная (максимальная) цена контракта", "Начальная цена")
-        customer = labelled("Заказчик", "Наименование заказчика")
-        deadline = labelled("Дата окончания подачи заявок", "Окончание подачи заявок", "Срок подачи заявок", "Дата и время окончания срока подачи заявок")
-        deadline_match = re.search(r"(\d{2}\.\d{2}\.\d{4})(?:\s+(\d{2}:\d{2}))?", deadline)
-        deadline_date = deadline_match.group(1) if deadline_match else ""
-        deadline_time = deadline_match.group(2) if deadline_match and deadline_match.group(2) else ""
-        records.append({
-            "source_id": source_match.group(0), "title": clean_title(title),
-            "price": raw_price, "address": "", "object_address": "",
-            "customer": customer, "organizer": "", "deadline": deadline_date, "deadline_time": deadline_time,
-            "contact_name": "", "contact_phone": "", "contact_email": "",
-            "url": link, "region": region,
-            "description": description[:5000], "published_at": value("pubDate") or value("published"),
+    def clean(text: str) -> str:
+        text = re.sub(r"<(?:br\s*/?|/p|/div|/li|/tr)\s*>", "\n", text, flags=re.I)
+        text = unescape(re.sub(r"<[^>]+>", " ", text))
+        return "\n".join(re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip())
+
+    def fields(*names: str) -> str:
+        wanted = {name.lower().replace("ё", "е") for name in names}
+        for node in item.iter():
+            tag = node.tag.rsplit("}", 1)[-1].split(":")[-1].lower().replace("ё", "е")
+            if tag in wanted and (node.text or "").strip():
+                return clean(node.text or "")
+        return ""
+
+    title = clean(value("title"))
+    link = value("link")
+    guid = value("guid") or value("id")
+    description_raw = value("description") or value("summary")
+    description = clean(description_raw)
+    source_match = re.search(r"\d{19}", " ".join((guid, link, title)))
+    if not title or not source_match or not link:
+        return None
+
+    searchable = "\n".join((title, description))
+    def labelled(*labels: str) -> str:
+        explicit = fields(*labels)
+        if explicit:
+            return explicit
+        label_pattern = "|".join(re.escape(label) for label in labels)
+        match = re.search(rf"(?:{label_pattern})\s*[:：\-]?\s*([^\n;|]+)", searchable, re.I)
+        return match.group(1).strip() if match else ""
+
+    raw_price = labelled("НМЦК", "Начальная (максимальная) цена контракта", "Начальная цена контракта", "Начальная цена")
+    customer = labelled("Заказчик", "Наименование заказчика")
+    deadline = labelled("Дата окончания подачи заявок", "Окончание подачи заявок", "Срок подачи заявок", "Дата и время окончания срока подачи заявок")
+    deadline_match = re.search(r"(\d{2}\.\d{2}\.\d{4})(?:\s+(\d{2}:\d{2}))?", deadline)
+    deadline_date = deadline_match.group(1) if deadline_match else ""
+    deadline_time = deadline_match.group(2) if deadline_match and deadline_match.group(2) else ""
+    # В RSS-ленте ЕИС <title> — служебный («Электронный аукцион №…»), а наименование
+    # объекта закупки лежит в description. Без него классификатор не видит заголовок
+    # и гейт сбора отсекает профильные закупки, пришедшие через RSS-фолбэк.
+    object_name = labelled("Наименование объекта закупки", "Наименование закупки")
+    if object_name:
+        title = object_name
+    return {
+        "source_id": source_match.group(0), "title": clean_title(title),
+        "price": raw_price, "address": "", "object_address": "",
+        "customer": customer, "organizer": "", "deadline": deadline_date, "deadline_time": deadline_time,
+        "contact_name": "", "contact_phone": "", "contact_email": "",
+        "url": link, "region": region,
+        "description": description[:5000], "published_at": value("pubDate") or value("published"),
+    }
+
+def _read_rss_records(region: str = "", per_page: int = 100, max_pages: int = 5,
+                      published_days: int = 30, max_cards: int = 0, ca_bundle: str = "") -> list[dict]:
+    """Многостраничная RSS-лента ЕИС с окном публикации и общим лимитом записей.
+    Дедупликация по номеру извещения внутри одного запуска."""
+    window = _date_window(published_days)
+    context = _rss_ssl_context(ca_bundle)
+    seen, records = set(), []
+    for page_number in range(1, max_pages + 1):
+        query = urllib.parse.urlencode({
+            "searchString": region, "morphology": "on", "pageNumber": str(page_number),
+            "recordsPerPage": f"_{per_page}", "fz44": "on", "fz223": "on", **window,
         })
+        request = urllib.request.Request(
+            f"{RSS_URL}?{query}",
+            headers={"User-Agent": USER_AGENT, "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml"},
+        )
+        with urllib.request.urlopen(request, timeout=45, context=context) as response:
+            xml_data = response.read()
+        # Защита от entity-expansion/DTD в недоверенной ленте: ЕИС RSS не содержит DTD.
+        if b"<!DOCTYPE" in xml_data[:4096] or b"<!ENTITY" in xml_data:
+            raise ValueError("RSS-лента содержит DTD/ENTITY — разбор отклонён")
+        root = ET.fromstring(xml_data)
+        entries = root.findall(".//item")
+        if not entries:
+            entries = root.findall(".//{http://www.w3.org/2005/Atom}entry")
+        if not entries:
+            break
+        for item in entries:
+            record = _parse_rss_item(item, region)
+            if not record or record["source_id"] in seen:
+                continue
+            seen.add(record["source_id"])
+            records.append(record)
+            if max_cards and len(records) >= max_cards:
+                break
+        logging.info("EIS RSS: page=%d entries=%d total=%d", page_number, len(entries), len(records))
+        if max_cards and len(records) >= max_cards:
+            break
+        if len(entries) < per_page:
+            break
     return records
 
-def _extract_records(page, region: str = "") -> list[dict]:
+def _collect_candidates(page, region: str, per_page: int, max_pages: int,
+                        published_days: int, cap: int) -> list[tuple[str, str]]:
+    """Ссылки на карточки из результатов поиска: первая страница прямым GET
+    (с окном дат и размером страницы), затем переходы по пагинации ЕИС."""
+    window = _date_window(published_days)
+    seen, candidates = set(), []
+
+    def wait_cards():
+        page.wait_for_function(
+            "noticePath => { const pattern = new RegExp(noticePath, 'i'); return [...document.querySelectorAll('a[href]')].some(a => pattern.test(a.href)); }",
+            arg=NOTICE_PATH.pattern, timeout=45000,
+        )
+
+    def harvest() -> int:
+        links = page.locator("a[href]").evaluate_all("els => els.map(a => ({href:a.href,title:(a.innerText||a.textContent||'').trim()}))")
+        before = len(candidates)
+        for link in links:
+            href = link.get("href", "")
+            title = re.sub(r"\s+", " ", link.get("title", "")).strip()
+            if title and NOTICE_PATH.search(href) and href not in seen:
+                seen.add(href)
+                candidates.append((title, href))
+                if cap and len(candidates) >= cap:
+                    break
+        return len(candidates) - before
+
+    try:
+        page.goto(_results_url(region, per_page, 1, window), wait_until="domcontentloaded", timeout=60000)
+        wait_cards()
+    except PlaywrightError:
+        logging.info("EIS direct results URL failed; falling back to search form")
+        page.goto(f"{RESULTS_URL}?recordsPerPage=_{per_page}", wait_until="domcontentloaded", timeout=60000)
+        search = _find_search_input(page)
+        search.fill(region)
+        search.press("Enter")
+        page.wait_for_load_state("domcontentloaded", timeout=30000)
+        wait_cards()
+    harvest()
+
+    page_number = 1
+    while page_number < max_pages and (not cap or len(candidates) < cap):
+        next_number = page_number + 1
+        next_href = ""
+        try:
+            anchors = page.locator("a[href*='pageNumber=']").evaluate_all("els => els.map(a => a.href)")
+            pattern = re.compile(rf"[?&]pageNumber={next_number}(?:&|$)")
+            next_href = next((href for href in anchors if pattern.search(href)), "")
+        except PlaywrightError:
+            next_href = ""
+        target = next_href or _results_url(region, per_page, next_number, window)
+        try:
+            page.goto(target, wait_until="domcontentloaded", timeout=60000)
+            wait_cards()
+        except PlaywrightError:
+            logging.info("EIS page %d unavailable; stopping pagination", next_number)
+            break
+        if harvest() == 0:
+            break
+        page_number = next_number
+    logging.info("EIS search: pages=%d cards=%d", page_number, len(candidates))
+    return candidates
+
+def _extract_records(page, region: str = "", limit: int = 0, per_page: int = 100,
+                     max_pages: int = 5, published_days: int = 30, max_cards: int = 0) -> list[dict]:
     # Регион поиска берётся из конфига; релевантность решает классификатор.
-    page.goto(SEARCH_URL, wait_until="domcontentloaded", timeout=60000)
-    search = _find_search_input(page)
-    search.fill(region)
-    search.press("Enter")
-    page.wait_for_load_state("domcontentloaded", timeout=30000)
-    # Wait for EIS results/cards to populate instead of scraping the page shell.
-    page.wait_for_function(
-        "noticePath => { const pattern = new RegExp(noticePath, 'i'); return [...document.querySelectorAll('a[href]')].some(a => pattern.test(a.href)); }",
-        arg=NOTICE_PATH.pattern,
-        timeout=45000,
-    )
-    links = page.locator("a[href]").evaluate_all("els => els.map(a => ({href:a.href,title:(a.innerText||a.textContent||'').trim()}))")
-    candidates = []
-    for link in links:
-        href = link.get("href", "")
-        title = re.sub(r"\s+", " ", link.get("title", "")).strip()
-        if title and NOTICE_PATH.search(href):
-            candidates.append((title, href))
-    seen, records = set(), []
-    for title, href in candidates:
-        if href in seen:
-            continue
-        seen.add(href)
+    cap = limit or max_cards
+    candidates = _collect_candidates(page, region, per_page, max_pages, published_days, cap)
+    if limit and len(candidates) > limit:
+        candidates = candidates[:limit]
+        logging.info("EIS search: cards limited to %d", limit)
+    total = len(candidates)
+    logging.info("EIS search: cards found=%d; reading cards", total)
+    records = []
+    for idx, (title, href) in enumerate(candidates, 1):
+        if idx == 1 or idx % 5 == 0 or idx == total:
+            logging.info("EIS cards: %d/%d", idx, total)
         record_page = page.context.new_page()
         try:
             record_page.goto(href, wait_until="domcontentloaded", timeout=45000)
@@ -375,14 +505,50 @@ def _extract_records(page, region: str = "") -> list[dict]:
             record_page.close()
     return records
 
-def run_once() -> tuple[int, int, Path]:
-    """Collect EIS once, keep only unseen matching notices, and update the fixed workbook."""
+def run_once(region: str | None = None, limit: int | None = None, keywords: str | None = None,
+             category: str | None = None, pages: int | None = None, per_page: int | None = None,
+             days: int | None = None, stats: dict | None = None) -> tuple[int, int, Path]:
+    """Collect EIS once, keep only unseen matching notices, and update the fixed workbook.
+
+    Глубина и сроки поиска берутся из блока "search" конфига и переопределяются
+    флагами CLI/формой панели: pages (число страниц), per_page (карточек на
+    странице), days (окно публикации в днях), limit (общий лимит карточек).
+    Сбор оставляет только закупки с подтверждённым регионом, определённым
+    направлением и релевантностью не ниже порога «Средняя» (стоп-шум отсекается);
+    просроченные по сроку подачи записи пропускаются (search.skip_expired).
+
+    Необязательный ``stats`` — словарь, который заполняется счётчиками и
+    лимитами запуска (для отчёта по источникам в collect-sources); контракт
+    возвращаемого 3-кортежа не меняется.
+    """
     init_db()
     cfg = settings()
-    region = (cfg.get("region") or "").strip()
+    search = search_settings(cfg)
+    search_region = (region or "").strip() or (cfg.get("region") or "").strip()
     headless = bool(cfg.get("headless", True))
     demo_include_all = bool(cfg.get("demo_include_all", False))
+    per_page_eff = int(per_page) if per_page else search["records_per_page"]
+    pages_eff = int(pages) if pages else search["max_pages"]
+    days_eff = int(days) if days is not None else search["published_days"]
+    max_cards = search["max_cards"]
+    ca_bundle = search["ca_bundle"]
+    skip_expired = search["skip_expired"]
+    card_limit = int(limit) if limit else 0
+    effective_cap = card_limit or max_cards
+    extra_keywords = [k.strip() for k in (keywords or "").split(",") if k.strip()]
+    wanted_category = (category or "").strip()
+    effective_cfg = cfg
+    if extra_keywords:
+        effective_cfg = copy.deepcopy(cfg)
+        effective_cfg.setdefault("groups", {})["Ключевые слова"] = extra_keywords
+    medium_threshold = int((cfg.get("thresholds") or {}).get("medium", 35))
     method = "Edge"
+    logging.info(
+        "EIS collection started; method=Edge headless=%s region=%r limit=%s per_page=%s pages=%s days=%s "
+        "keywords=%s category=%r demo_include_all=%s skip_expired=%s",
+        headless, search_region, effective_cap or "нет", per_page_eff, pages_eff, days_eff,
+        ",".join(extra_keywords) or "нет", wanted_category or "любое", demo_include_all, skip_expired,
+    )
     try:
         with sync_playwright() as playwright:
             browser = _launch_browser(playwright, headless=headless)
@@ -390,20 +556,32 @@ def run_once() -> tuple[int, int, Path]:
             page = context.new_page()
             try:
                 try:
-                    records = _extract_records(page, region=region)
+                    records = _extract_records(
+                        page, region=search_region, limit=card_limit, per_page=per_page_eff,
+                        max_pages=pages_eff, published_days=days_eff, max_cards=effective_cap,
+                    )
                 except PlaywrightError as exc:
                     method = "RSS"
                     logging.warning("Edge collection failed; using EIS RSS: %s", exc)
-                    records = _read_rss_records(region=region)
+                    records = _read_rss_records(
+                        region=search_region, per_page=per_page_eff, max_pages=pages_eff,
+                        published_days=days_eff, max_cards=effective_cap, ca_bundle=ca_bundle,
+                    )
                 if not records and method != "RSS":
                     method = "RSS"
                     logging.warning("Edge returned no raw records; using EIS RSS")
-                    records = _read_rss_records(region=region)
+                    records = _read_rss_records(
+                        region=search_region, per_page=per_page_eff, max_pages=pages_eff,
+                        published_days=days_eff, max_cards=effective_cap, ca_bundle=ca_bundle,
+                    )
+                if effective_cap and len(records) > effective_cap:
+                    records = records[:effective_cap]
             finally:
                 page.close()
                 browser.close()
 
         logging.info("EIS collection method=%s; raw records before filters=%d", method, len(records))
+        expired_out = 0
         if demo_include_all:
             relevant = records
             filtered_out = 0
@@ -413,31 +591,57 @@ def run_once() -> tuple[int, int, Path]:
             relevant = []
             filtered_out = 0
             for record in records:
-                result = classify(record)
-                if result["category"] != "Не определено" and result["region_check"] != "Проверить регион":
+                if skip_expired and _is_expired(record.get("deadline", "")):
+                    expired_out += 1
+                    continue
+                result = classify(record, cfg=effective_cfg)
+                if wanted_category and result["category"] != wanted_category:
+                    filtered_out += 1
+                    continue
+                if (result["category"] != "Не определено"
+                        and result["region_check"] != "Проверить регион"
+                        and result["score"] >= medium_threshold):
                     relevant.append(record)
                 else:
                     filtered_out += 1
 
         with session() as con:
-            existing_ids = {row[0] for row in con.execute("SELECT DISTINCT source_id FROM tenders")}
+            existing_keys = {
+                row[0] for row in con.execute(
+                    "SELECT DISTINCT canonical_key FROM tenders WHERE canonical_key IS NOT NULL"
+                )
+            }
         unseen = []
         duplicates = 0
+        seen_this_run = set()
         for record in relevant:
             notice_id = str(record.get("source_id") or "").strip()
-            if not notice_id or notice_id in existing_ids:
+            key = canonical_key(notice_id, str(record.get("url") or ""))
+            if not notice_id or key in existing_keys or key in seen_this_run:
                 duplicates += 1
                 continue
-            existing_ids.add(notice_id)
+            seen_this_run.add(key)
             unseen.append(record)
 
         added, updated, skipped = import_rows(unseen)
         imported = added + updated
         report, _ = export()
         logging.info(
-            "EIS summary: method=%s raw=%d filtered_out=%d matched=%d already_seen=%d added=%d updated=%d skipped=%d report=%s",
-            method, len(records), filtered_out, len(relevant), duplicates, added, updated, skipped, report,
+            "EIS summary: method=%s raw=%d filtered_out=%d expired_out=%d matched=%d already_seen=%d added=%d updated=%d skipped=%d report=%s",
+            method, len(records), filtered_out, expired_out, len(relevant), duplicates, added, updated, skipped, report,
         )
+        if stats is not None:
+            stats.update({
+                "method": method, "found": len(records),
+                "filtered_out": filtered_out, "expired_out": expired_out,
+                "matched": len(relevant), "already_seen": duplicates,
+                "added": added, "updated": updated, "skipped": skipped,
+                "limits": {
+                    "region": search_region, "per_page": per_page_eff,
+                    "pages": pages_eff, "days": days_eff,
+                    "max_cards": effective_cap or "нет", "skip_expired": skip_expired,
+                },
+            })
         return len(records), imported, report
     except Exception:
         logging.exception("EIS collection failed; method=%s", method)

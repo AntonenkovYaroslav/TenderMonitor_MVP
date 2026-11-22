@@ -117,6 +117,7 @@ def run_schedule(
 
     def do_run(reason: str) -> None:
         logging.info("Scheduled EIS run started (%s)", reason)
+        print(f"Выполняю сбор ЕИС ({reason}). Обычно занимает 1-2 минуты.", flush=True)
         try:
             found, imported, report = run_once()
             _write_last_run(datetime.now().astimezone())

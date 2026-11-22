@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Настройки — Tender Monitor{% endblock %}
+{% block content %}
+<h1>Настройки</h1>
+
+<div class="card">
+  <h2>Конфигурация сбора</h2>
+  <p class="hint">Файл <code>config/keywords.json</code>. Перед записью создаётся резервная копия <code>config/keywords.json.bak</code>.</p>
+  <form method="post" action="{{ url_for('web.settings_page') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="grid">
+      <label>Регион поиска<input type="text" name="region" value="{{ config.get('region','') }}"></label>
+      <label>Порог «Высокая» (баллы)<input type="number" name="high" min="0" max="100" value="{{ config.get('thresholds',{}).get('high',65) }}"></label>
+      <label>Порог «Средняя» (баллы)<input type="number" name="medium" min="0" max="100" value="{{ config.get('thresholds',{}).get('medium',35) }}"></label>
+      <label>Расписание (ЧЧ:ММ через запятую)<input type="text" name="schedule_times" value="{{ config.get('schedule',{}).get('times',[])|join(', ') }}"></label>
+      <label class="check"><input type="checkbox" name="headless" value="1" {% if config.get('headless') %}checked{% endif %}> Без окна браузера (headless)</label>
+      <label class="check"><input type="checkbox" name="demo_include_all" value="1" {% if config.get('demo_include_all') %}checked{% endif %}> Демо-режим: отключить фильтры по профилю и региону</label>
+      <label>Карточек на странице ЕИС<input type="number" name="search_per_page" min="10" max="200" step="10" value="{{ config.get('search',{}).get('records_per_page',100) }}"></label>
+      <label>Страниц поиска за запуск<input type="number" name="search_max_pages" min="1" max="50" value="{{ config.get('search',{}).get('max_pages',5) }}"></label>
+      <label>Общий лимит карточек<input type="number" name="search_max_cards" min="0" max="100000" value="{{ config.get('search',{}).get('max_cards',1000) }}"></label>
+      <label>Окно публикации, дней (0 — без ограничения)<input type="number" name="search_published_days" min="0" max="3650" value="{{ config.get('search',{}).get('published_days',30) }}"></label>
+      <label>CA-сертификат для RSS (путь, необязательно)<input type="text" name="search_ca_bundle" value="{{ config.get('search',{}).get('ca_bundle','') }}" placeholder="относительный от корня проекта или абсолютный, напр. config/certs/russian_trusted_ca.pem"></label>
+      <label class="check"><input type="checkbox" name="search_skip_expired" value="1" {% if config.get('search',{}).get('skip_expired',True) %}checked{% endif %}> Пропускать закупки с истёкшим сроком подачи</label>
+    </div>
+    <button type="submit" class="primary">Сохранить конфигурацию</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Настройки панели</h2>
+  <form method="post" action="{{ url_for('web.settings_page') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="form" value="panel">
+    <div class="grid">
+      <label>Закупок на странице<input type="number" name="per_page" min="10" max="500" value="{{ panel.get('ui.per_page','50') }}"></label>
+      <label>Регион по умолчанию для сбора<input type="text" name="collect_region" value="{{ panel.get('collect.region', config.get('region','')) }}"></label>
+      <label>Лимит карточек по умолчанию<input type="number" name="collect_limit" min="1" max="5000" value="{{ panel.get('collect.limit','300') }}"></label>
+    </div>
+    <button type="submit" class="primary">Сохранить настройки панели</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Группы ключевых слов</h2>
+  {% for name, words in (config.get('groups') or {}).items() %}
+  <p><strong>{{ name }}</strong><br><span class="muted">{{ words|join(', ') }}</span></p>
+  {% endfor %}
+  <p class="hint">Списки направлений редактируются в файле <code>config/keywords.json</code> (в панели пока не выведены).</p>
+</div>
+
+<div class="card">
+  <h2>Стоп-фразы и веса оценки</h2>
+  <p><strong>Стоп-фразы профиля</strong> ({{ (config.get('stop_phrases') or [])|length }} шт.) — снижают балл на {{ config.get('scoring',{}).get('stop_penalty',60) }} при совпадении в заголовке:<br>
+    <span class="muted">{{ (config.get('stop_phrases') or [])|join(', ') }}</span></p>
+  <p class="hint">Веса: заголовок {{ config.get('scoring',{}).get('title_weight',35) }}, описание/адрес/заказчик {{ config.get('scoring',{}).get('other_weight',12) }},
+    регион +{{ config.get('scoring',{}).get('region_bonus',15) }}/−{{ config.get('scoring',{}).get('region_penalty',10) }}.
+    Отрицания: {{ (config.get('negations') or [])|join(', ') }}. Редактируются в <code>config/keywords.json</code>.</p>
+</div>
+{% endblock %}
